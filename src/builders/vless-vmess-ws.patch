@@ -1,0 +1,47 @@
+*** Begin Patch
+*** Update File: src/builders/SingboxConfigBuilder.js
+@@
+     convertProxy(proxy) {
+         // Create a shallow copy to avoid mutating the original
+         const sanitized = { ...proxy };
++        const legacyNetwork = typeof sanitized.network === 'string'
++            ? sanitized.network.toLowerCase()
++            : undefined;
++
+         // Strip Clash-only / mis-typed fields that conflict with sing-box semantics.
+-        // `udp` is Clash-only. Top-level `network` in sing-box is a TCP/UDP allowlist
+-        // (NetworkList in option/types.go); a stray "tcp" silently disables UDP for
+-        // every group that selects this node — including DNS hijack and fakeip.
++        // `udp` is Clash-only. Legacy Clash/Xray node objects may also expose
++        // transport type as top-level `network`; preserve that information by
++        // converting it into Sing-box's `transport` before removing the field.
+         delete sanitized.udp;
+         delete sanitized.network;
++
++        if (!sanitized.transport && legacyNetwork && legacyNetwork !== 'tcp' && legacyNetwork !== 'udp') {
++            const transport = {
++                type: legacyNetwork,
++                path: sanitized.path ?? undefined,
++                ...(sanitized.host && { headers: { host: sanitized.host } }),
++                ...(legacyNetwork === 'grpc' && {
++                    service_name: sanitized.serviceName ?? sanitized.service_name ?? undefined
++                })
++            };
++
++            // Drop legacy fields that have been moved into transport.
++            delete sanitized.path;
++            delete sanitized.host;
++            delete sanitized.serviceName;
++            delete sanitized.service_name;
++
++            sanitized.transport = transport;
++        }
++
++        // Never emit the legacy invalid form `network: ws`. Sing-box uses
++        // `transport.type = ws` for WebSocket and defaults the outbound network to TCP.
++        if (sanitized.transport?.type === 'ws') {
++            delete sanitized.network;
++        }
++
+         // Remove 'alpn' from root level - it should only exist inside 'tls' object for sing-box
+*** End Patch
