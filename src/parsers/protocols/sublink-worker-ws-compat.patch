@@ -1,0 +1,82 @@
+*** Begin Patch
+*** Update File: src/parsers/protocols/vlessParser.js
+@@
+ export function parseVless(url) {
+     const { addressPart, params, name } = parseUrlParams(url);
+     const [uuid, serverInfo] = addressPart.split('@');
+     const { host, port } = parseServerInfo(serverInfo);
+     const tls = createTlsConfig(params);
+@@
+-    const transport = params.type !== 'tcp' ? createTransportConfig(params) : undefined;
++    const transportType = String(params.type || 'tcp').toLowerCase();
++    const transport = transportType !== 'tcp'
++        ? createTransportConfig({ ...params, type: transportType })
++        : undefined;
+@@
+     return {
+         type: 'vless',
+         tag: name,
+         server: host,
+         server_port: port,
+         uuid: decodeURIComponent(uuid),
+         tcp_fast_open: false,
+         tls,
+         transport,
+*** Update File: src/parsers/protocols/vmessParser.js
+@@
+-    const networkType = vmessConfig.net || 'tcp';
+-    const transportType = vmessConfig.type || networkType;
++    const networkType = String(vmessConfig.net || 'tcp').toLowerCase();
++    const transportType = String(vmessConfig.type || networkType).toLowerCase();
+@@
+-    if (networkType === 'ws') {
++    if (networkType === 'ws' || transportType === 'ws') {
+         transport = {
+             type: 'ws',
+-            path: vmessConfig.path,
+-            headers: { 'host': vmessConfig.host ? vmessConfig.host : vmessConfig.sni }
++            path: vmessConfig.path || '/',
++            headers: vmessConfig.host || vmessConfig.sni
++                ? { 'host': vmessConfig.host || vmessConfig.sni }
++                : undefined
+         };
+*** Update File: src/builders/SingboxConfigBuilder.js
+@@
+     convertProxy(proxy) {
+         // Create a shallow copy to avoid mutating the original
+         const sanitized = { ...proxy };
++        const legacyNetwork = typeof sanitized.network === 'string'
++            ? sanitized.network.toLowerCase()
++            : undefined;
++
+         // Strip Clash-only / mis-typed fields that conflict with sing-box semantics.
+-        // `udp` is Clash-only. Top-level `network` in sing-box is a TCP/UDP allowlist
+-        // (NetworkList in option/types.go); a stray "tcp" silently disables UDP for
+-        // every group that selects this node — including DNS hijack and fakeip.
++        // `udp` is Clash-only. Legacy proxy objects may use top-level `network`
++        // to mean transport type, which is not valid Sing-box outbound syntax.
+         delete sanitized.udp;
+         delete sanitized.network;
++
++        // Preserve legacy WS/gRPC/H2/HTTP transport metadata instead of losing it.
++        // Sing-box uses transport.type for these protocols and defaults the
++        // outbound network to TCP, so `network: ws` must never be emitted.
++        if (!sanitized.transport && legacyNetwork && !['tcp', 'udp'].includes(legacyNetwork)) {
++            sanitized.transport = {
++                type: legacyNetwork,
++                path: sanitized.path ?? undefined,
++                ...(sanitized.host ? { headers: { host: sanitized.host } } : {}),
++                ...(legacyNetwork === 'grpc' ? {
++                    service_name: sanitized.serviceName ?? sanitized.service_name ?? undefined
++                } : {})
++            };
++            delete sanitized.path;
++            delete sanitized.host;
++            delete sanitized.serviceName;
++            delete sanitized.service_name;
++        }
++
++        if (sanitized.transport?.type === 'ws') {
++            delete sanitized.network;
++        }
+*** End Patch
